@@ -1,6 +1,6 @@
 [project]
-name = "torchmlx"
-version = "0.1.0"
+name = "pytorchmlx"
+version = "0.0.1"
 description = "An educational PyTorch-shaped interface for MLX and PyTorch"
 readme = "README.md"
 requires-python = ">=3.10"

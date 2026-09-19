@@ -87,6 +87,13 @@ jobs:
         if: steps.release.outputs.publish == 'true'
         run: uv tool run twine check dist/*
 
+      - name: publish package
+        if: steps.release.outputs.publish == 'true'
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: uv tool run twine upload --skip-existing --verbose dist/*
+
       - name: create tag
         if: steps.release.outputs.publish == 'true' && steps.release.outputs.create_tag == 'true'
         env:
@@ -94,13 +101,6 @@ jobs:
         run: |
           git tag "$TAG" "$GITHUB_SHA"
           git push origin "$TAG"
-
-      - name: publish package
-        if: steps.release.outputs.publish == 'true'
-        env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
-        run: uv tool run twine upload dist/*
 
       - name: create github release
         if: steps.release.outputs.publish == 'true'

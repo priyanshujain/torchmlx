@@ -9,3 +9,6 @@ examples/tinystories-llm/TinyStoriesV2-GPT4-valid.txt
 
 # Virtual environments
 .venv
+
+# Environment files
+.env
