@@ -29,7 +29,13 @@ else:
         ):
             if amsgrad or maximize or foreach is not None or capturable or differentiable or fused is not None:
                 unsupported("torchmlx.optim.AdamW with non-default options")
+            model = getattr(params, "model", None)
+            if model is None:
+                raise TypeError(
+                    "MLX AdamW requires parameters returned directly by model.parameters()"
+                )
             self._parameters = params
+            self._model = model
             self._optimizer = _native.AdamW(
                 learning_rate=lr,
                 betas=list(betas),
@@ -37,16 +43,27 @@ else:
                 weight_decay=weight_decay,
                 bias_correction=True,
             )
+            self._pending_update = None
+            self._random_before_forward = None
 
         @property
         def state(self):
             return self._optimizer.state
 
         def zero_grad(self, *args, **kwargs):
-            unsupported("torchmlx.optim.AdamW.zero_grad on MLX; use torchmlx.Trainer")
+            if args or kwargs:
+                unsupported("torchmlx.optim.AdamW.zero_grad with arguments")
+            from torchmlx._autograd import activate
+
+            self._pending_update = None
+            activate(self)
 
         def step(self, *args, **kwargs):
-            unsupported("torchmlx.optim.AdamW.step on MLX; use torchmlx.Trainer")
+            if args or kwargs:
+                unsupported("torchmlx.optim.AdamW.step with arguments")
+            from torchmlx._autograd import step
+
+            step(self)
 
     def __getattr__(name):
         unsupported(f"torchmlx.optim.{name}")

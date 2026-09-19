@@ -27,6 +27,25 @@ else:
         reduction="mean",
         label_smoothing=0.0,
     ):
+        original_input = input
+
+        def finish(loss):
+            from torchmlx._autograd import register_loss
+
+            def rebuild(recomputed_input):
+                return cross_entropy(
+                    recomputed_input,
+                    target,
+                    weight=weight,
+                    size_average=size_average,
+                    ignore_index=ignore_index,
+                    reduce=reduce,
+                    reduction=reduction,
+                    label_smoothing=label_smoothing,
+                )
+
+            return register_loss(loss, original_input, rebuild)
+
         if size_average is not None or reduce is not None:
             unsupported("torchmlx.nn.functional.cross_entropy legacy reductions")
         if input.ndim < 2:
@@ -56,15 +75,15 @@ else:
         losses = (1 - label_smoothing) * target_losses + label_smoothing * smooth_losses
         losses = mx.where(valid, losses, mx.zeros_like(losses))
         if reduction == "none":
-            return losses.reshape(output_shape)
+            return finish(losses.reshape(output_shape))
         if reduction == "sum":
-            return mx.sum(losses)
+            return finish(mx.sum(losses))
         if reduction == "mean":
             if weight is None:
                 denominator = mx.sum(valid)
             else:
                 denominator = mx.sum(mx.where(valid, weight[safe_targets], 0))
-            return mx.sum(losses) / denominator
+            return finish(mx.sum(losses) / denominator)
         raise ValueError(f"invalid reduction {reduction!r}")
 
     def scaled_dot_product_attention(

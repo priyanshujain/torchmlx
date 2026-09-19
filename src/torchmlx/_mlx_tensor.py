@@ -2,11 +2,14 @@ import mlx.core as mx
 
 
 _transpose = mx.array.transpose
+_reshape = mx.array.reshape
+_squeeze = mx.array.squeeze
 _mean = mx.array.mean
 _var = mx.array.var
 _any = mx.array.any
 _getitem = mx.array.__getitem__
 _setitem = mx.array.__setitem__
+_item = mx.array.item
 
 
 def _torch_transpose(self, dim0=None, dim1=None):
@@ -18,17 +21,49 @@ def _torch_transpose(self, dim0=None, dim1=None):
     else:
         axes = list(range(self.ndim))
         axes[dim0], axes[dim1] = axes[dim1], axes[dim0]
-    return _transpose(self, axes)
+    result = _transpose(self, axes)
+    from ._autograd import propagate
+
+    return propagate(self, result, lambda value: _transpose(value, axes))
 
 
 def _view(self, *shape):
     if len(shape) == 1 and isinstance(shape[0], (tuple, list)):
         shape = shape[0]
-    return self.reshape(shape)
+    return _torch_reshape(self, shape)
+
+
+def _torch_reshape(self, *shape):
+    if len(shape) == 1 and isinstance(shape[0], (tuple, list)):
+        shape = shape[0]
+    result = _reshape(self, shape)
+    from ._autograd import propagate
+
+    return propagate(self, result, lambda value: _reshape(value, shape))
 
 
 def _unsqueeze(self, dim):
-    return mx.expand_dims(self, axis=dim)
+    result = mx.expand_dims(self, axis=dim)
+    from ._autograd import propagate
+
+    return propagate(self, result, lambda value: mx.expand_dims(value, axis=dim))
+
+
+def _torch_squeeze(self, dim=None):
+    result = _squeeze(self, axis=dim)
+    from ._autograd import propagate
+
+    return propagate(self, result, lambda value: _squeeze(value, axis=dim))
+
+
+def _flatten(self, start_dim=0, end_dim=-1):
+    if end_dim < 0:
+        end_dim += self.ndim
+    flattened = 1
+    for dimension in self.shape[start_dim : end_dim + 1]:
+        flattened *= dimension
+    shape = self.shape[:start_dim] + (flattened,) + self.shape[end_dim + 1 :]
+    return _torch_reshape(self, shape)
 
 
 def _float(self):
@@ -126,9 +161,17 @@ def _requires_grad(self, requires_grad=True):
 
 
 def _backward(self, *args, **kwargs):
-    raise RuntimeError(
-        "loss.backward() is not supported by the MLX backend; use torchmlx.Trainer"
-    )
+    if args or kwargs:
+        raise TypeError("MLX backward compatibility does not accept arguments")
+    from ._autograd import backward
+
+    backward(self)
+
+
+def _torch_item(self):
+    from ._autograd import replayed_value
+
+    return _item(replayed_value(self))
 
 
 def _mask_indices(mask):
@@ -144,9 +187,17 @@ def _torch_getitem(self, key):
     if isinstance(key, mx.array) and key.dtype == mx.bool_:
         indices = _mask_indices(key)
         if key.shape == self.shape:
-            return _getitem(self.reshape(-1), indices)
-        return _getitem(self, indices)
-    return _getitem(self, key)
+            result = _getitem(self.reshape(-1), indices)
+            operation = lambda value: _getitem(_reshape(value, (-1,)), indices)
+        else:
+            result = _getitem(self, indices)
+            operation = lambda value: _getitem(value, indices)
+    else:
+        result = _getitem(self, key)
+        operation = lambda value: _getitem(value, key)
+    from ._autograd import propagate
+
+    return propagate(self, result, operation)
 
 
 def _torch_setitem(self, key, value):
@@ -163,8 +214,11 @@ def _torch_setitem(self, key, value):
 
 def install(device_type):
     mx.array.transpose = _torch_transpose
+    mx.array.reshape = _torch_reshape
     mx.array.view = _view
     mx.array.unsqueeze = _unsqueeze
+    mx.array.squeeze = _torch_squeeze
+    mx.array.flatten = _flatten
     mx.array.float = _float
     mx.array.bool = _bool
     mx.array.pow = _pow
@@ -180,6 +234,7 @@ def install(device_type):
     mx.array.contiguous = _contiguous
     mx.array.requires_grad_ = _requires_grad
     mx.array.backward = _backward
+    mx.array.item = _torch_item
     mx.array.device = property(lambda self: device_type("mps"))
     mx.array.__getitem__ = _torch_getitem
     mx.array.__setitem__ = _torch_setitem

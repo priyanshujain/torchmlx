@@ -235,13 +235,17 @@ config = TransformerConfig(vocabulary_size=len(tokenizer))
 encoded_text = tokenizer.encode(training_text)
 model = TinyStoriesTransformer(config).to(device)
 optimizer = optim.AdamW(model.parameters(), lr=3e-4)
-trainer = torch.Trainer(model, optimizer, language_model_loss, compile=True)
+model.train()
 
 for step in range(arguments.steps):
     input_tokens, target_tokens = create_batch(
         encoded_text, batch_size=8, context_length=config.context_length
     )
-    loss = trainer.step(input_tokens, target_tokens)
+    optimizer.zero_grad()
+    logits = model(input_tokens)
+    loss = language_model_loss(logits, target_tokens)
+    loss.backward()
+    optimizer.step()
     print(f"step {step + 1}: loss {loss.item():.4f}")
 
 print(generate_text(model, tokenizer, "Once upon a time", token_count=120))

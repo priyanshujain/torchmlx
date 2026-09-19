@@ -23,14 +23,31 @@ else:
     import mlx.core as mx
     import mlx.nn as _native
 
+    class _ParameterTree(dict):
+        def __init__(self, values, model):
+            super().__init__(values)
+            self.model = model
+
     class Module(_native.Module):
         def __call__(self, *args, **kwargs):
-            return self.forward(*args, **kwargs)
+            from torchmlx._autograd import abort_forward, begin_forward, end_forward
+
+            begin_forward()
+            try:
+                output = self.forward(*args, **kwargs)
+            except Exception:
+                abort_forward()
+                raise
+            end_forward(self, args, kwargs, output)
+            return output
 
         def forward(self, *args, **kwargs):
             raise NotImplementedError(
                 f"Module [{type(self).__name__}] is missing the required forward function"
             )
+
+        def parameters(self):
+            return _ParameterTree(super().parameters(), self)
 
         def to(self, *args, **kwargs):
             dtype = kwargs.pop("dtype", None)
