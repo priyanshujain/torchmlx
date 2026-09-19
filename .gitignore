@@ -12,3 +12,4 @@ examples/tinystories-llm/TinyStoriesV2-GPT4-valid.txt
 
 # Environment files
 .env
+AGENTS.md

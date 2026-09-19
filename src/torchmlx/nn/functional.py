@@ -32,11 +32,11 @@ else:
         def finish(loss):
             from torchmlx._autograd import register_loss
 
-            def rebuild(recomputed_input):
+            def rebuild(recomputed_input, current_target, *current_weight):
                 return cross_entropy(
                     recomputed_input,
-                    target,
-                    weight=weight,
+                    current_target,
+                    weight=current_weight[0] if current_weight else None,
                     size_average=size_average,
                     ignore_index=ignore_index,
                     reduce=reduce,
@@ -44,7 +44,23 @@ else:
                     label_smoothing=label_smoothing,
                 )
 
-            return register_loss(loss, original_input, rebuild)
+            operands = (target,) if weight is None else (target, weight)
+            signature = (
+                "cross_entropy",
+                weight is not None,
+                size_average,
+                ignore_index,
+                reduce,
+                reduction,
+                label_smoothing,
+            )
+            return register_loss(
+                loss,
+                original_input,
+                rebuild,
+                operands,
+                signature,
+            )
 
         if size_average is not None or reduce is not None:
             unsupported("torchmlx.nn.functional.cross_entropy legacy reductions")

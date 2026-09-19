@@ -10,6 +10,7 @@ if BACKEND == "torch":
         return getattr(_native, name)
 
 else:
+    import mlx.core as mx
     import mlx.optimizers as _native
 
     class AdamW:
@@ -45,6 +46,19 @@ else:
             )
             self._pending_update = None
             self._random_before_forward = None
+            self._compiled_backward = {}
+            self._optimizer.init(model.trainable_parameters())
+            state = [model.state, self._optimizer.state, mx.random.state]
+
+            def update(gradients):
+                self._optimizer.update(model, gradients)
+
+            self._compiled_step = mx.compile(
+                update,
+                inputs=state,
+                outputs=state,
+            )
+            self._step_state = state
 
         @property
         def state(self):

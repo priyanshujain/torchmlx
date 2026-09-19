@@ -24,7 +24,12 @@ def _torch_transpose(self, dim0=None, dim1=None):
     result = _transpose(self, axes)
     from ._autograd import propagate
 
-    return propagate(self, result, lambda value: _transpose(value, axes))
+    return propagate(
+        self,
+        result,
+        lambda value: _transpose(value, axes),
+        ("transpose", tuple(axes)),
+    )
 
 
 def _view(self, *shape):
@@ -39,21 +44,36 @@ def _torch_reshape(self, *shape):
     result = _reshape(self, shape)
     from ._autograd import propagate
 
-    return propagate(self, result, lambda value: _reshape(value, shape))
+    return propagate(
+        self,
+        result,
+        lambda value: _reshape(value, shape),
+        ("reshape", tuple(shape)),
+    )
 
 
 def _unsqueeze(self, dim):
     result = mx.expand_dims(self, axis=dim)
     from ._autograd import propagate
 
-    return propagate(self, result, lambda value: mx.expand_dims(value, axis=dim))
+    return propagate(
+        self,
+        result,
+        lambda value: mx.expand_dims(value, axis=dim),
+        ("unsqueeze", dim),
+    )
 
 
 def _torch_squeeze(self, dim=None):
     result = _squeeze(self, axis=dim)
     from ._autograd import propagate
 
-    return propagate(self, result, lambda value: _squeeze(value, axis=dim))
+    return propagate(
+        self,
+        result,
+        lambda value: _squeeze(value, axis=dim),
+        ("squeeze", dim),
+    )
 
 
 def _flatten(self, start_dim=0, end_dim=-1):
@@ -188,16 +208,30 @@ def _torch_getitem(self, key):
         indices = _mask_indices(key)
         if key.shape == self.shape:
             result = _getitem(self.reshape(-1), indices)
-            operation = lambda value: _getitem(_reshape(value, (-1,)), indices)
+            operation = lambda value, current_indices: _getitem(
+                _reshape(value, (-1,)), current_indices
+            )
+            signature = ("getitem_bool", "flat")
         else:
             result = _getitem(self, indices)
-            operation = lambda value: _getitem(value, indices)
+            operation = lambda value, current_indices: _getitem(
+                value, current_indices
+            )
+            signature = ("getitem_bool", "first_axis")
+        operands = (indices,)
+    elif isinstance(key, mx.array):
+        result = _getitem(self, key)
+        operation = lambda value, current_key: _getitem(value, current_key)
+        signature = ("getitem_array",)
+        operands = (key,)
     else:
         result = _getitem(self, key)
         operation = lambda value: _getitem(value, key)
+        signature = ("getitem", type(key).__qualname__, repr(key))
+        operands = ()
     from ._autograd import propagate
 
-    return propagate(self, result, operation)
+    return propagate(self, result, operation, signature, operands)
 
 
 def _torch_setitem(self, key, value):

@@ -11,6 +11,78 @@ _replayed_losses = {}
 _suspended = False
 
 
+class _ArraySlot:
+    def __init__(self, index):
+        self.index = index
+
+
+class _BackwardPlan:
+    def __init__(self, value_and_grad, state):
+        self._value_and_grad = value_and_grad
+        self._compiled = mx.compile(
+            value_and_grad,
+            inputs=state,
+            outputs=state,
+        )
+        self._compile_enabled = True
+
+    def __call__(self, *inputs):
+        function = self._compiled if self._compile_enabled else self._value_and_grad
+        return function(*inputs)
+
+    def fallback(self, *inputs):
+        self._compile_enabled = False
+        return self._value_and_grad(*inputs)
+
+
+def _partition_arrays(value, arrays):
+    if isinstance(value, mx.array):
+        slot = _ArraySlot(len(arrays))
+        arrays.append(value)
+        return slot
+    if isinstance(value, tuple):
+        return tuple(_partition_arrays(item, arrays) for item in value)
+    if isinstance(value, list):
+        return [_partition_arrays(item, arrays) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _partition_arrays(item, arrays) for key, item in value.items()
+        }
+    return value
+
+
+def _restore_arrays(template, arrays):
+    if isinstance(template, _ArraySlot):
+        return arrays[template.index]
+    if isinstance(template, tuple):
+        return tuple(_restore_arrays(item, arrays) for item in template)
+    if isinstance(template, list):
+        return [_restore_arrays(item, arrays) for item in template]
+    if isinstance(template, dict):
+        return {
+            key: _restore_arrays(item, arrays) for key, item in template.items()
+        }
+    return template
+
+
+def _template_key(template):
+    if isinstance(template, _ArraySlot):
+        return ("array",)
+    if isinstance(template, tuple):
+        return ("tuple", tuple(_template_key(item) for item in template))
+    if isinstance(template, list):
+        return ("list", tuple(_template_key(item) for item in template))
+    if isinstance(template, dict):
+        return (
+            "dict",
+            tuple(
+                (type(key).__qualname__, repr(key), _template_key(item))
+                for key, item in template.items()
+            ),
+        )
+    return ("static", type(template).__qualname__, repr(template))
+
+
 def _snapshot_random_state():
     state = [key + mx.array(0, dtype=key.dtype) for key in mx.random.state]
     mx.eval(state)
@@ -38,7 +110,7 @@ def end_forward(model, args, kwargs, output):
         and not _suspended
         and isinstance(output, mx.array)
     ):
-        _latest_forward = (model, args, kwargs, lambda value: value)
+        _latest_forward = (model, args, kwargs, ())
         _lineage[id(output)] = (output, _latest_forward)
 
 
@@ -57,37 +129,69 @@ def activate(optimizer):
     optimizer._random_before_forward = _snapshot_random_state()
 
 
-def propagate(source, result, operation=lambda value: value):
+def propagate(source, result, operation, signature, operands=()):
     entry = _lineage.get(id(source))
     if not _suspended and entry is not None and entry[0] is source:
-        model, args, kwargs, previous = entry[1]
+        model, args, kwargs, transforms = entry[1]
         _lineage[id(result)] = (
             result,
             (
                 model,
                 args,
                 kwargs,
-                lambda output: operation(previous(output)),
+                transforms + ((operation, signature, operands),),
             ),
         )
     return result
 
 
-def register_loss(loss, loss_input, rebuild):
+def register_loss(loss, loss_input, rebuild, operands, signature):
     if _suspended or _active_optimizer is None:
         return loss
     entry = _lineage.get(id(loss_input))
     if entry is None or entry[0] is not loss_input:
         return loss
-    model, args, kwargs, transform = entry[1]
+    model, args, kwargs, transforms = entry[1]
 
-    def plan():
-        def objective():
-            return rebuild(transform(model(*args, **kwargs)))
+    context = (
+        args,
+        kwargs,
+        tuple(transform_operands for _, _, transform_operands in transforms),
+        operands,
+    )
+    dynamic_inputs = []
+    template = _partition_arrays(context, dynamic_inputs)
+    cache_key = (
+        getattr(model, "training", None),
+        _template_key(template),
+        tuple(transform_signature for _, transform_signature, _ in transforms),
+        signature,
+    )
 
-        return nn.value_and_grad(model, objective)()
+    def build():
+        state = [model.state, mx.random.state]
 
-    _loss_plans[id(loss)] = (loss, model, plan)
+        def objective(*current_inputs):
+            current_args, current_kwargs, current_transform_operands, current_operands = (
+                _restore_arrays(template, current_inputs)
+            )
+            output = model(*current_args, **current_kwargs)
+            for (operation, _, _), operation_operands in zip(
+                transforms, current_transform_operands
+            ):
+                output = operation(output, *operation_operands)
+            return rebuild(output, *current_operands)
+
+        value_and_grad = nn.value_and_grad(model, objective)
+        return _BackwardPlan(value_and_grad, state)
+
+    _loss_plans[id(loss)] = (
+        loss,
+        model,
+        cache_key,
+        tuple(dynamic_inputs),
+        build,
+    )
     return loss
 
 
@@ -100,12 +204,32 @@ def backward(loss):
         raise RuntimeError(
             "this MLX loss cannot use backward compatibility; compute it with a supported torchmlx loss function"
         )
-    _, model, plan = entry
+    _, model, cache_key, dynamic_inputs, build = entry
     random_after_forward = _snapshot_random_state()
     _restore_random_state(_active_optimizer._random_before_forward)
     _suspended = True
     try:
-        replayed_loss, gradients = plan()
+        plan = _active_optimizer._compiled_backward.get(cache_key)
+        if plan is None:
+            plan = build()
+            _active_optimizer._compiled_backward[cache_key] = plan
+        parameters_before_replay = model.trainable_parameters()
+        try:
+            replayed_loss, gradients = plan(*dynamic_inputs)
+        except ValueError as error:
+            message = str(error)
+            if (
+                not plan._compile_enabled
+                or "Attempting to eval an array" not in message
+                or not (
+                    "function transformations" in message
+                    or "without a primitive" in message
+                )
+            ):
+                raise
+            model.update(parameters_before_replay)
+            _restore_random_state(_active_optimizer._random_before_forward)
+            replayed_loss, gradients = plan.fallback(*dynamic_inputs)
         mx.eval(replayed_loss, gradients, mx.random.state)
     finally:
         _suspended = False
@@ -126,8 +250,8 @@ def step(optimizer):
     if optimizer._pending_update is None:
         raise RuntimeError("loss.backward() must be called before optimizer.step()")
     model, gradients = optimizer._pending_update
-    optimizer._optimizer.update(model, gradients)
-    mx.eval(model.parameters(), optimizer._optimizer.state, mx.random.state)
+    optimizer._compiled_step(gradients)
+    mx.eval(optimizer._step_state)
     optimizer._pending_update = None
     _active_optimizer = None
     _latest_forward = None
