@@ -1,8 +1,8 @@
-# TorchMLX
+# torchmlx
 
-TorchMLX is a PyTorch-shaped compatibility layer that uses MLX on Apple silicon and PyTorch elsewhere.
+torchmlx is a pytorch-shaped compatibility layer that uses mlx on apple silicon and pytorch elsewhere.
 
-It is experimental and targets transformer inference and training without per-operation backend fallback.
+NOTE: it is experimental and built first for educational use. If you find a bug, please create an issue on the repo.
 
 ```python
 import torchmlx as torch
@@ -12,4 +12,4 @@ model = nn.Linear(4, 2)
 optimizer = optim.AdamW(model.parameters(), lr=3e-4)
 ```
 
-See the [TinyStories example](examples/tinystories-llm/train.py) and [compatibility details](docs/compatibility.md).
+see the [tinystories example](examples/tinystories-llm/train.py) and [compatibility details](docs/compatibility.md).
