@@ -1,0 +1,110 @@
+name: publish to pypi
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: publish-to-pypi
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: select release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          latest_tag=$(git tag --list 'v[0-9]*' --sort=-v:refname | head -n 1)
+          create_tag=false
+          publish=true
+
+          if [ -z "$latest_tag" ]; then
+            target_tag=v0.0.1
+            create_tag=true
+          elif gh release view "$latest_tag" >/dev/null 2>&1; then
+            if git diff --quiet "$latest_tag"..HEAD; then
+              publish=false
+              target_tag="$latest_tag"
+            else
+              version=${latest_tag#v}
+              IFS=. read -r major minor patch <<< "$version"
+              target_tag="v${major}.${minor}.$((patch + 1))"
+              create_tag=true
+            fi
+          else
+            target_tag="$latest_tag"
+          fi
+
+          if [[ ! "$target_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "invalid release tag: $target_tag"
+            exit 1
+          fi
+
+          {
+            echo "publish=$publish"
+            echo "create_tag=$create_tag"
+            echo "tag=$target_tag"
+            echo "version=${target_tag#v}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: stop when unchanged
+        if: steps.release.outputs.publish == 'false'
+        run: echo "no changes since ${{ steps.release.outputs.tag }}"
+
+      - name: verify pypi credentials
+        if: steps.release.outputs.publish == 'true'
+        env:
+          PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          if [ -z "$PYPI_API_TOKEN" ]; then
+            echo "PYPI_API_TOKEN is not configured"
+            exit 1
+          fi
+
+      - name: set package version
+        if: steps.release.outputs.publish == 'true'
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: sed -i "0,/version = \".*\"/s//version = \"$VERSION\"/" pyproject.toml
+
+      - name: build package
+        if: steps.release.outputs.publish == 'true'
+        run: uv build
+
+      - name: check package
+        if: steps.release.outputs.publish == 'true'
+        run: uv tool run twine check dist/*
+
+      - name: create tag
+        if: steps.release.outputs.publish == 'true' && steps.release.outputs.create_tag == 'true'
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          git tag "$TAG" "$GITHUB_SHA"
+          git push origin "$TAG"
+
+      - name: publish package
+        if: steps.release.outputs.publish == 'true'
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: uv tool run twine upload dist/*
+
+      - name: create github release
+        if: steps.release.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: gh release create "$TAG" dist/* --generate-notes --title "$TAG"
