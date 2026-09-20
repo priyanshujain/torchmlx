@@ -189,8 +189,9 @@ def _backward(self, *args, **kwargs):
 
 
 def _torch_item(self):
-    from ._autograd import replayed_value
+    from ._autograd import note_eager_evaluation, replayed_value
 
+    note_eager_evaluation()
     return _item(replayed_value(self))
 
 

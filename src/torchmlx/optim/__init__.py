@@ -46,7 +46,7 @@ else:
             )
             self._pending_update = None
             self._random_before_forward = None
-            self._compiled_backward = {}
+            self._training_plans = {}
             self._optimizer.init(model.trainable_parameters())
             state = [model.state, self._optimizer.state, mx.random.state]
 

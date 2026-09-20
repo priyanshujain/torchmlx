@@ -32,13 +32,15 @@ else:
         def __call__(self, *args, **kwargs):
             from torchmlx._autograd import abort_forward, begin_forward, end_forward
 
-            begin_forward()
+            tracking = begin_forward(self)
             try:
                 output = self.forward(*args, **kwargs)
             except Exception:
-                abort_forward()
+                if tracking:
+                    abort_forward()
                 raise
-            end_forward(self, args, kwargs, output)
+            if tracking:
+                end_forward(self, args, kwargs, output)
             return output
 
         def forward(self, *args, **kwargs):
