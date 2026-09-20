@@ -1,3 +1,5 @@
+# pyright: reportAssignmentType=false, reportRedeclaration=false
+
 import math
 
 from torchmlx._backend import BACKEND, unsupported
@@ -16,6 +18,7 @@ if BACKEND == "torch":
 
 else:
     import mlx.core as mx
+    from torchmlx._mlx_tensor import wrap
 
     def cross_entropy(
         input,
@@ -55,7 +58,7 @@ else:
                 label_smoothing,
             )
             return register_loss(
-                loss,
+                wrap(loss),
                 original_input,
                 rebuild,
                 operands,
@@ -125,18 +128,20 @@ else:
         if scale is None:
             scale = 1 / math.sqrt(query.shape[-1])
         mask = "causal" if is_causal else attn_mask
-        return mx.fast.scaled_dot_product_attention(
-            query, key, value, scale=scale, mask=mask
+        return wrap(
+            mx.fast.scaled_dot_product_attention(
+                query, key, value, scale=scale, mask=mask
+            )
         )
 
     def silu(input, inplace=False):
         if inplace:
             unsupported("torchmlx.nn.functional.silu with inplace=True")
-        return input * mx.sigmoid(input)
+        return wrap(input * mx.sigmoid(input))
 
     def softmax(input, dim=None, dtype=None):
         value = input.astype(dtype) if dtype is not None else input
-        return mx.softmax(value, axis=dim)
+        return wrap(mx.softmax(value, axis=dim))
 
     def __getattr__(name):
         unsupported(f"torchmlx.nn.functional.{name}")

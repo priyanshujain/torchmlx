@@ -1,3 +1,7 @@
+# pyright: reportAssignmentType=false, reportIncompatibleMethodOverride=false, reportRedeclaration=false
+
+from typing import cast
+
 from torchmlx._backend import BACKEND, unsupported
 
 
@@ -19,26 +23,62 @@ if BACKEND == "torch":
 
 else:
     from collections.abc import Iterable, MutableSequence
+    from contextvars import ContextVar
 
     import mlx.core as mx
     import mlx.nn as _native
+    from mlx.utils import tree_flatten
 
-    class _ParameterTree(dict):
+    from torchmlx._mlx_tensor import Tensor, wrap
+
+    _module_depth = ContextVar("torchmlx_module_depth", default=0)
+
+    class _ParameterIterator:
         def __init__(self, values, model):
-            super().__init__(values)
             self.model = model
+            self._iterator = iter(value for _, value in tree_flatten(values))
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return wrap(next(self._iterator))
 
     class Module(_native.Module):
+        def __setattr__(self, name, value):
+            super().__setattr__(name, mx.array(value) if isinstance(value, Tensor) else value)
+
+        def __getattribute__(self, name):
+            value = super().__getattribute__(name)
+            return (
+                wrap(value)
+                if isinstance(value, mx.array) and _module_depth.get() == 0
+                else value
+            )
+
+        def __getattr__(self, name):
+            value = super().__getattr__(name)
+            return (
+                wrap(value)
+                if isinstance(value, mx.array) and _module_depth.get() == 0
+                else value
+            )
+
         def __call__(self, *args, **kwargs):
             from torchmlx._autograd import abort_forward, begin_forward, end_forward
 
             tracking = begin_forward(self)
+            args = wrap(args)
+            kwargs = wrap(kwargs)
+            token = _module_depth.set(_module_depth.get() + 1)
             try:
-                output = self.forward(*args, **kwargs)
+                output = wrap(self.forward(*args, **kwargs))
             except Exception:
                 if tracking:
                     abort_forward()
                 raise
+            finally:
+                _module_depth.reset(token)
             if tracking:
                 end_forward(self, args, kwargs, output)
             return output
@@ -49,7 +89,10 @@ else:
             )
 
         def parameters(self):
-            return _ParameterTree(super().parameters(), self)
+            return _ParameterIterator(self._native_parameters(), self)
+
+        def _native_parameters(self):
+            return super().parameters()
 
         def to(self, *args, **kwargs):
             dtype = kwargs.pop("dtype", None)
@@ -80,10 +123,10 @@ else:
 
     def Parameter(data=None, requires_grad=True):
         if data is None:
-            return mx.array([])
+            return wrap(mx.array([]))
         if not requires_grad:
             unsupported("torchmlx.nn.Parameter with requires_grad=False")
-        return data
+        return wrap(data)
 
     class Linear(Module, _native.Linear):
         def __init__(self, in_features, out_features, bias=True, device=None, dtype=None):
@@ -156,7 +199,7 @@ else:
                 raise ValueError("the MLX backend only accepts device='mps'")
             _native.LayerNorm.__init__(
                 self,
-                normalized_shape,
+                cast(int, normalized_shape),
                 eps=eps,
                 affine=elementwise_affine,
                 bias=bias,

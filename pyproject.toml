@@ -20,3 +20,14 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/torchmlx"]
+
+[tool.pyright]
+typeCheckingMode = "standard"
+include = ["src", "examples/tinystories-llm/train.py"]
+venvPath = "."
+venv = ".venv"
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.414",
+]

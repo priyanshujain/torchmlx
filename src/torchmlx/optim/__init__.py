@@ -1,3 +1,5 @@
+# pyright: reportAssignmentType=false, reportRedeclaration=false
+
 from torchmlx._backend import BACKEND, unsupported
 
 
